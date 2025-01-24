@@ -2,7 +2,7 @@ import json
 import asyncio
 from zeroconf import ServiceBrowser, Zeroconf, ServiceListener
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, ExtBot
+from telegram.ext import Application, CommandHandler, ContextTypes
 import paho.mqtt.client as mqtt
 import logging
 
@@ -15,14 +15,6 @@ class MyListener(ServiceListener):
         self.discovered_devices = []
 
     def add_service(self, zeroconf, type, name):
-        
-        """""
-        Метод add_service вызывается, когда zeroconf обнаруживает новый сервис.
-        Он получает информацию о сервисе, если она доступна,
-        и, если сервис начинается с "eShader_", то добавляет его в список
-        обнаруженных устройств.
-        """
-
         logger.info(f"Service {name} of type {type} added")
         info = zeroconf.get_service_info(type, name)
         if info and name.startswith("eShader_"):
@@ -42,46 +34,30 @@ class MyListener(ServiceListener):
         pass
 
 def read_config():
-    
-    """
-    Читает конфигурационный файл config.json и возвращает его содержимое в виде словаря.
-    Если файл не существует или содержит ошибки, то возвращает None.
-    """
     try:
         with open('config.json', 'r') as file:
             config = json.load(file)
+            # Проверка обязательных ключей
+            required_keys = ["telegram_token", "mqtt_server", "mqtt_port"]
+            for key in required_keys:
+                if key not in config:
+                    raise ValueError(f"Missing required key in config: {key}")
             return config
     except Exception as ex:
         logger.error(f"Error reading config file: {ex}")
         return None
 
-def discover_devices():
-
-    """
-    Сканирует сеть на предмет обнаружения устройств, опубликовавших сервис "_http._tcp.local.".
-    Возвращает список обнаруженных устройств, каждый из которых является словарем,
-    содержащим hostname, IP-адрес, список сервисов, предложенных устройством,
-    и его идентификатор.
-    """
-    
+async def discover_devices():
     zeroconf = Zeroconf()
     listener = MyListener()
     browser = ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
     try:
-        import time
-        time.sleep(20)  # Сканирование сети в течение 20 секунд
+        await asyncio.sleep(20)  # Сканирование сети в течение 20 секунд
     finally:
         zeroconf.close()
     return listener.discovered_devices
 
 def convert_bytes_to_str(data):
-
-    """
-    Конвертирует байтовые строки, словари и списки, содержащие байтовые строки,
-    в строки, раскодированные в utf-8. Если аргумент не является байтами, словарем или списком,
-    то возвращает аргумент без изменений.
-    """
-    
     if isinstance(data, bytes):
         return data.decode("utf-8")
     elif isinstance(data, dict):
@@ -92,12 +68,6 @@ def convert_bytes_to_str(data):
         return data
 
 def connect_to_mqtt(config):
-
-    """
-    Подключается к MQTT брокеру, используя параметры, указанные в config.
-    Если подключение успешно, то возвращает клиент MQTT. Иначе возвращает None.
-    """
-    
     try:
         client = mqtt.Client()
         if config.get("mqtt_user") and config.get("mqtt_password"):
@@ -110,15 +80,8 @@ def connect_to_mqtt(config):
         return None
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    
-    """
-    Обработчик команды /scan. Сканирует сеть на предмет обнаружения устройств,
-    опубликовавших сервис "_http._tcp.local.". Если устройства найдены,
-    то отправляет список устройств в MQTTtopic "devices/found".
-    """
-    
     await update.message.reply_text("Сканирование сети началось...")
-    devices = await asyncio.to_thread(discover_devices)
+    devices = await discover_devices()
     if devices:
         response = "Найденные устройства:\n"
         for device in devices:
@@ -143,13 +106,6 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Ошибка подключения к MQTT брокеру.")
 
 def main():
-
-    """
-    Главная функция программы. Читает конфигурационный файл config.json,
-    создает экземпляр бота и добавляет к нему обработчик команды /scan.
-    Если конфигурация не загружена, то выводит ошибку и завершает работу.
-    """
-    
     config = read_config()
     if not config:
         logger.error("Ошибка: Не удалось загрузить конфигурацию из config.json.")
@@ -159,7 +115,6 @@ def main():
         application = Application.builder().token(config["telegram_token"]).build()
         application.add_handler(CommandHandler("scan", scan_command))
 
-        # Добавление обработчиков ошибок
         async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
             logger.error(msg="Exception while handling an update:", exc_info=context.error)
 
