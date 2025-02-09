@@ -1,8 +1,9 @@
 import json
 import asyncio
-from zeroconf import ServiceBrowser, Zeroconf, ServiceListener
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from zeroconf.asyncio import AsyncZeroconf
+from zeroconf import ServiceBrowser, ServiceListener
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import paho.mqtt.client as mqtt
 import logging
 
@@ -37,7 +38,6 @@ def read_config():
     try:
         with open('config.json', 'r') as file:
             config = json.load(file)
-            # Проверка обязательных ключей
             required_keys = ["telegram_token", "mqtt_server", "mqtt_port"]
             for key in required_keys:
                 if key not in config:
@@ -48,13 +48,13 @@ def read_config():
         return None
 
 async def discover_devices():
-    zeroconf = Zeroconf()
+    zeroconf = AsyncZeroconf()
     listener = MyListener()
-    browser = ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
+    browser = ServiceBrowser(zeroconf.zeroconf, "_http._tcp.local.", listener)
     try:
         await asyncio.sleep(20)  # Сканирование сети в течение 20 секунд
     finally:
-        zeroconf.close()
+        await zeroconf.async_close()  # Закрываем zeroconf правильно в асинхронном контексте
     return listener.discovered_devices
 
 def convert_bytes_to_str(data):
@@ -69,7 +69,7 @@ def convert_bytes_to_str(data):
 
 def connect_to_mqtt(config):
     try:
-        client = mqtt.Client()
+        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)  # Используем API версии 2
         if config.get("mqtt_user") and config.get("mqtt_password"):
             client.username_pw_set(config["mqtt_user"], config["mqtt_password"])
         client.connect(config["mqtt_server"], config["mqtt_port"], 60)
@@ -80,7 +80,7 @@ def connect_to_mqtt(config):
         return None
 
 async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Сканирование сети началось...")
+    await update.message.reply_text("Ищем устройства ...")
     devices = await discover_devices()
     if devices:
         response = "Найденные устройства:\n"
@@ -105,25 +105,30 @@ async def scan_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("Ошибка подключения к MQTT брокеру.")
 
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = ReplyKeyboardMarkup(
+        [[KeyboardButton("🔍 Scan")]], resize_keyboard=True
+    )
+    await update.message.reply_text("Выберите действие:", reply_markup=keyboard)
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "🔍 Scan":
+        await scan_command(update, context)
+
 def main():
     config = read_config()
     if not config:
         logger.error("Ошибка: Не удалось загрузить конфигурацию из config.json.")
         return
 
-    try:
-        application = Application.builder().token(config["telegram_token"]).build()
-        application.add_handler(CommandHandler("scan", scan_command))
+    application = Application.builder().token(config["telegram_token"]).build()
+    application.add_handler(CommandHandler("start", start_command))  # Кнопка появляется после /start
+    application.add_handler(CommandHandler("scan", scan_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, button_handler))  # Обработчик нажатий на кнопку "Scan"
 
-        async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-            logger.error(msg="Exception while handling an update:", exc_info=context.error)
-
-        application.add_error_handler(error_handler)
-
-        logger.info("Бот запущен...")
-        application.run_polling()
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
+    logger.info("Бот запущен...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
